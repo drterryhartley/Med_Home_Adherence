@@ -1,0 +1,91 @@
+import pandas as pd
+import numpy as np
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import roc_auc_score
+
+# Sample data generation
+np.random.seed(42)
+
+def generate_sample_data(n=1000):
+    data = {
+        'MemberID': np.arange(1, n+1),
+        'AssignedPCP': np.random.choice(['PCP1', 'PCP2', 'PCP3', 'PCP4'], size=n),
+        'Age': np.random.randint(18, 80, size=n),
+        'Gender': np.random.choice(['M', 'F'], size=n),
+        'LastVisitDate': pd.date_range('2023-01-01', periods=n, freq='D'),
+        'Adherence': np.random.choice([0, 1], size=n, p=[0.3, 0.7]),
+        'ChronicCondition': np.random.choice(['Yes', 'No'], size=n),
+        'HealthPlanType': np.random.choice(['HMO', 'PPO'], size=n),
+        'MemberTenure': np.random.randint(1, 15, size=n),
+        'OutreachCount': np.random.randint(0, 5, size=n),
+    }
+    df = pd.DataFrame(data)
+    return df
+
+# Generate data
+df = generate_sample_data()
+
+# Feature engineering
+df['DaysSinceLastVisit'] = (pd.to_datetime('today') - df['LastVisitDate']).dt.days
+df['ChronicCondition'] = df['ChronicCondition'].map({'Yes': 1, 'No': 0})
+df['Gender'] = df['Gender'].map({'M': 1, 'F': 0})
+
+# Prepare the features
+features = ['Age', 'Gender', 'DaysSinceLastVisit', 'ChronicCondition', 'MemberTenure']
+X = df[features]
+y = df['Adherence']
+
+# Split data into training and test sets
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# Train logistic regression model
+model = LogisticRegression()
+model.fit(X_train, y_train)
+
+# Feature importance (coefficients)
+feature_weights = model.coef_[0]
+print(f"Feature Weights: {dict(zip(features, feature_weights))}")
+
+# Calculate independent propensity scores for each feature
+df['AgeScore'] = model.predict_proba(df[['Age']])[:, 1]
+df['GenderScore'] = model.predict_proba(df[['Gender']])[:, 1]
+df['DaysSinceLastVisitScore'] = model.predict_proba(df[['DaysSinceLastVisit']])[:, 1]
+df['ChronicConditionScore'] = model.predict_proba(df[['ChronicCondition']])[:, 1]
+df['MemberTenureScore'] = model.predict_proba(df[['MemberTenure']])[:, 1]
+
+# Apply weights to individual feature scores
+# Adjust these weights based on feature importance, domain knowledge, or model coefficients
+weights = {
+    'AgeScore': abs(feature_weights[0]),  # Use absolute value to avoid negative weights
+    'GenderScore': abs(feature_weights[1]),
+    'DaysSinceLastVisitScore': abs(feature_weights[2]),
+    'ChronicConditionScore': abs(feature_weights[3]),
+    'MemberTenureScore': abs(feature_weights[4]),
+}
+
+# Normalize the weights so they sum to 1
+total_weight = sum(weights.values())
+normalized_weights = {k: v / total_weight for k, v in weights.items()}
+
+# Calculate weighted propensity score
+df['WeightedPropensityScore'] = (
+    df['AgeScore'] * normalized_weights['AgeScore'] +
+    df['GenderScore'] * normalized_weights['GenderScore'] +
+    df['DaysSinceLastVisitScore'] * normalized_weights['DaysSinceLastVisitScore'] +
+    df['ChronicConditionScore'] * normalized_weights['ChronicConditionScore'] +
+    df['MemberTenureScore'] * normalized_weights['MemberTenureScore']
+)
+
+# Set a threshold for high-risk members (e.g., propensity score < 0.5)
+def generate_outreach_report(df, threshold=0.5):
+    high_risk_members = df[df['WeightedPropensityScore'] < threshold]
+    return high_risk_members[['MemberID', 'WeightedPropensityScore', 'OutreachCount']]
+
+# Generate the outreach report
+outreach_report = generate_outreach_report(df)
+print("Outreach Report for High Risk Members:")
+print(outreach_report)
+
+# Save the outreach report to a CSV file
+outreach_report.to_csv("outreach_report_weighted.csv", index=False)
